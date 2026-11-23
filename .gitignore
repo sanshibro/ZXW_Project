@@ -1,0 +1,34 @@
+# OS & Editor files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python / AI caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ipynb_checkpoints/
+venv/
+.venv/
+env/
+
+# Large binary datasets & checkpoints (keep lightweight metadata/samples in git)
+*.root
+*.h5
+*.hdf5
+*.npz
+*.pt
+*.pth
+*.onnx
+!sample_*.npz
+
+# Temporary scratch files
+tmp/
+temp/
+*.tmp
+*.log
