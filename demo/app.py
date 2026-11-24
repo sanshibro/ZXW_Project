@@ -33,7 +33,13 @@ from demo.evaluate_benchmark import reconstruct_all_methods, calc_psnr, calc_ssi
 from demo.src.models.event_net import LiteEventNet
 from demo.src.models.dual_gammanet import LiteDualGammaNet
 
-plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
+plt.rcParams["font.sans-serif"] = [
+    "Microsoft YaHei",
+    "SimHei",
+    "Noto Sans CJK SC",
+    "WenQuanYi Zen Hei",
+    "DejaVu Sans",
+]
 plt.rcParams["axes.unicode_minus"] = False
 
 st.set_page_config(
