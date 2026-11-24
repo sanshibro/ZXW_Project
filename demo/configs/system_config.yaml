@@ -1,0 +1,41 @@
+# 双模像素化阵列智能伽马成像系统全局配置 (对标 GAGG:Ce-SiPM + 钨 MURA 编码准直样机)
+system:
+  fov_half_angle_deg: 34.0          # 全编码视场半张角 [-34°, +34°] x [-34°, +34°]
+  image_grid_size: 48               # 重建角度空间网格 48 x 48
+  source_distance_mm: 500.0         # 默认参考源距 500 mm
+
+collimator:
+  mode: "mura"                      # 可选 "mura" (Gottesman-Fenimore 素数阶编码孔) 或 "pinhole" (钨针孔)
+  mura_rank: 17                     # MURA 素数阶 p=17 (2x2周期裁剪为 33x33 镶嵌钨掩模, 零旁瓣精确匹配 17x17 探测器)
+  mask_pitch_mm: 2.0                # 掩模开孔单元尺寸 2.0 mm
+  mask_thickness_mm: 3.2            # 钨合金(W, 19.3 g/cm3)掩模厚度 3.2 mm (60keV阻挡>99.9%, 662keV透过率~54%真实穿透)
+  mask_to_scatterer_mm: 24.0        # 掩模中心平面到第一层晶体中心距离 24.0 mm
+  pinhole_radius_mm: 1.4            # 针孔模式孔径半径 1.4 mm
+
+detector:
+  material: "GAGG_Ce"               # Gd3Al2Ga3O12:Ce 闪烁晶体阵列 + SiPM 读出
+  density_g_cm3: 6.63
+  n_pixels_xy: 17                   # 17 x 17 像素化闪烁体阵列 (与 Rank-17 MURA 1:1 匹配)
+  pixel_pitch_mm: 2.0               # 像素中心间距 2.0 mm (总敏感面积 34.0 x 34.0 mm^2)
+  scatterer_thickness_mm: 4.5       # 第一层(准直投影接收 / 康普顿散射层)厚度 4.5 mm
+  absorber_thickness_mm: 16.0       # 第二层(康普顿吸收层)厚度 16.0 mm
+  layer_gap_mm: 20.0                # 两层中心纵向间距 20.0 mm (增大立体角接收度，兼顾角分辨)
+
+digitizer:
+  energy_res_ref_fwhm: 0.070        # 662 keV 处能量分辨率 FWHM = 7.0%
+  constant_term_b: 0.015            # 晶体非均匀性与刻度常数项 b = 1.5%
+  electronic_noise_keV: 3.0         # 电子学等效基线噪声 sigma_elec = 3.0 keV
+  trigger_threshold_keV: 18.0       # 单通道能量触发阈值 18.0 keV
+  doi_sigma_mm: 1.2                 # 晶体厚度方向作用深度(DOI)误差 1.2 mm
+  optical_crosstalk_frac: 0.035     # 相邻SiPM通道光串扰比例 3.5%
+  coincidence_window_ns: 15.0       # 符合时间窗 15 ns
+  random_bg_fraction: 0.08          # 环境散射与偶然符合污染事件比例 8%
+
+training:
+  seed: 42
+  n_train_samples: 2400             # 多工况训练集样本数
+  n_val_samples: 360                # 多工况验证集样本数
+  event_net_epochs: 26
+  recon_net_epochs: 38
+  batch_size: 32
+  learning_rate: 0.0012

@@ -17,15 +17,12 @@ venv/
 .venv/
 env/
 
-# Large binary datasets & checkpoints (keep lightweight metadata/samples in git)
+# Large raw datasets (keep lightweight demo checkpoints <5MB and benchmark_cases.npz in git!)
 *.root
 *.h5
 *.hdf5
-*.npz
-*.pt
-*.pth
-*.onnx
-!sample_*.npz
+demo/data/train_*.npz
+demo/data/val_*.npz
 
 # Temporary scratch files
 tmp/
