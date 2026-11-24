@@ -29,3 +29,9 @@ tmp/
 temp/
 *.tmp
 *.log
+
+# Local multi-branch convenience mirror
+本地快捷汇总_申报书与分析文档/
+Start_Local_Demo.bat
+Start_Public_Demo.bat
+
