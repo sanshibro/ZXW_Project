@@ -96,6 +96,8 @@ def _check_mask_open(geom: CameraGeometry, xm: np.ndarray, ym: np.ndarray) -> tu
     half_span = 0.5 * ms * geom.mask_pitch_mm
 
     in_mask_bounds = (np.abs(xm) < half_span) & (np.abs(ym) < half_span)
+    # Mosaic center cell [ms//2, ms//2] spans [-0.5*pitch, +0.5*pitch], which equals floor((x + 0.5*ms*pitch)/pitch)!
+    # Note: detector pixel centers also span [-0.5*n_pix*pitch + 0.5*pitch ...], so floor((x + half_span)/pitch) is exact!
     col_idx = np.clip(np.floor((xm + half_span) / geom.mask_pitch_mm).astype(np.int32), 0, ms - 1)
     row_idx = np.clip(np.floor((ym + half_span) / geom.mask_pitch_mm).astype(np.int32), 0, ms - 1)
 
