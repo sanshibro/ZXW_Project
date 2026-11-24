@@ -1,0 +1,43 @@
+{
+  "fwhm_sensitivity": {
+    "fwhm_percent": [
+      3.5000000000000004,
+      5.0,
+      7.000000000000001,
+      10.0,
+      14.000000000000002
+    ],
+    "ai_psnr_db": [
+      35.58,
+      35.36,
+      35.58,
+      34.51,
+      33.27
+    ],
+    "jmlem_psnr_db": [
+      22.97,
+      22.86,
+      23.09,
+      22.82,
+      22.33
+    ]
+  },
+  "module_ablation_40_scenes": {
+    "collimator_only": {
+      "psnr_db": 29.12,
+      "ssim": 0.6646
+    },
+    "compton_only": {
+      "psnr_db": 21.38,
+      "ssim": 0.4405
+    },
+    "without_event_net": {
+      "psnr_db": 36.76,
+      "ssim": 0.9647
+    },
+    "full_proposed": {
+      "psnr_db": 36.98,
+      "ssim": 0.9741
+    }
+  }
+}
