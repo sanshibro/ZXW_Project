@@ -33,9 +33,24 @@ from demo.evaluate_benchmark import reconstruct_all_methods, calc_psnr, calc_ssi
 from demo.src.models.event_net import LiteEventNet
 from demo.src.models.dual_gammanet import LiteDualGammaNet
 
+import matplotlib.font_manager as fm
+
+# Auto-register Linux CJK fonts when deployed on Streamlit Community Cloud / Debian containers
+for _cjk_path in (
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+):
+    if os.path.exists(_cjk_path):
+        try:
+            fm.fontManager.addfont(_cjk_path)
+        except Exception:
+            pass
+
 plt.rcParams["font.sans-serif"] = [
     "Microsoft YaHei",
     "SimHei",
+    "Noto Sans CJK JP",
     "Noto Sans CJK SC",
     "WenQuanYi Zen Hei",
     "DejaVu Sans",
