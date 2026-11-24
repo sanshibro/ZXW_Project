@@ -1,0 +1,123 @@
+{
+  "models": {
+    "lite_event_net_params": 42981,
+    "lite_dual_gammanet_params": 771693,
+    "total_params": 814674,
+    "total_model_size_mb": 3.11
+  },
+  "event_discrimination": {
+    "four_class_accuracy": 0.8741,
+    "macro_roc_auc": 0.9712,
+    "compton_arm_fwhm_662keV_deg": 9.19
+  },
+  "benchmark_80_scenes": {
+    "mura": {
+      "psnr_db": 22.9,
+      "ssim": 0.5268,
+      "rmse": 0.086,
+      "latency_ms": 1.08
+    },
+    "sbp": {
+      "psnr_db": 5.1,
+      "ssim": 0.0299,
+      "rmse": 0.5806,
+      "latency_ms": 30.99
+    },
+    "jmlem": {
+      "psnr_db": 22.95,
+      "ssim": 0.5197,
+      "rmse": 0.0887,
+      "latency_ms": 1065.69
+    },
+    "ai": {
+      "psnr_db": 36.19,
+      "ssim": 0.9639,
+      "rmse": 0.0217,
+      "latency_ms": 56.02
+    }
+  },
+  "angular_resolution_fwhm_deg": {
+    "ai_59.5keV_deg": 5.09,
+    "ai_661.7keV_deg": 4.86,
+    "compton_sbp_661.7keV_deg": 29.4
+  },
+  "speedup_vs_joint_lmmlem": 19.0,
+  "single_source_cases": {
+    "低能 Am-241 (59.5 keV)": {
+      "mura_psnr": 28.04,
+      "sbp_psnr": 1.75,
+      "jmlem_psnr": 25.74,
+      "ai_psnr": 40.29,
+      "ai_ssim": 0.9861,
+      "gate_col": 0.877,
+      "gate_comp": 0.123
+    },
+    "中能 Ba-133 (356 keV)": {
+      "mura_psnr": 28.03,
+      "sbp_psnr": 6.74,
+      "jmlem_psnr": 31.29,
+      "ai_psnr": 48.54,
+      "ai_ssim": 0.9975,
+      "gate_col": 0.767,
+      "gate_comp": 0.233
+    },
+    "高能 Cs-137 (662 keV)": {
+      "mura_psnr": 24.3,
+      "sbp_psnr": 8.12,
+      "jmlem_psnr": 32.58,
+      "ai_psnr": 43.69,
+      "ai_ssim": 0.9928,
+      "gate_col": 0.575,
+      "gate_comp": 0.425
+    }
+  },
+  "extended_shape_cases": {
+    "近距双点源 (12°间隔, 140 keV)": {
+      "mura_psnr": 23.74,
+      "sbp_psnr": 1.92,
+      "jmlem_psnr": 17.3,
+      "ai_psnr": 37.24,
+      "ai_ssim": 0.9837
+    },
+    "扩展圆环源 (356 keV)": {
+      "mura_psnr": 17.21,
+      "sbp_psnr": 4.87,
+      "jmlem_psnr": 17.0,
+      "ai_psnr": 25.7,
+      "ai_ssim": 0.968
+    },
+    "L形扩展面源 (662 keV)": {
+      "mura_psnr": 17.93,
+      "sbp_psnr": 6.73,
+      "jmlem_psnr": 20.16,
+      "ai_psnr": 29.25,
+      "ai_ssim": 0.9775
+    }
+  },
+  "low_count_psnr_curve": {
+    "MURA": [
+      20.613138280907815,
+      20.299980965004057,
+      22.974137190020006,
+      24.47711545127364
+    ],
+    "Compton SBP": [
+      5.832165164471299,
+      6.575680534473389,
+      5.335058970097411,
+      4.943556742745083
+    ],
+    "Joint LM-MLEM": [
+      22.89030662285995,
+      23.47002037275791,
+      24.313593957511145,
+      24.272016818025794
+    ],
+    "LiteDualGammaNet (Ours)": [
+      31.022068402805118,
+      33.03613781326979,
+      37.31443814522993,
+      38.26244314168355
+    ]
+  }
+}
