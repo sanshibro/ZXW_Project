@@ -1,234 +1,250 @@
 """
-Streamlit Interactive Workbench:
-基于像素化阵列探测器的准直孔与康普顿散射智能伽马成像仿真与重建平台
-Run from repo root:
-  streamlit run demo/app.py
+BNCT 478 keV 智能伽马成像算法研究 · 正算与反算双软件包交互式实验平台
+依托课题：四川大学大学生创新训练计划（课题编号 12475312，指导教师：韩纪锋研究员）
 """
 
 from __future__ import annotations
 import os
-import sys
-import copy
-import time
-
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import json
+import time
 import numpy as np
-import yaml
 import torch
-import matplotlib.pyplot as plt
 import streamlit as st
+import matplotlib.pyplot as plt
 
-from demo.src.physics.geometry_and_sources import (
-    CameraGeometry,
-    SourceComponent,
-    SourceScene,
-    render_ground_truth_map,
+from forward_pkg import (
+    BNCTSystemGeometry,
+    DetectorDigitizerConfig,
+    generate_bnct_boron_distribution,
+    simulate_bnct_forward_transport,
+    digitize_detector_events,
+    extract_18d_event_features,
+    project_pinhole_channels,
+    project_compton_channels,
+    reconstruct_parallel_multihole,
+    reconstruct_coded_aperture_mura,
 )
-from demo.src.physics.mc_simulator import simulate_scene_transport
-from demo.src.physics.digitizer import DetectorDigitizer
-from demo.src.baselines.traditional_recon import build_collimated_system_matrix
-from demo.evaluate_benchmark import reconstruct_all_methods, calc_psnr, calc_ssim_2d
-from demo.src.models.event_net import LiteEventNet
-from demo.src.models.dual_gammanet import LiteDualGammaNet
+from inverse_pkg import (
+    BNCTEventNet,
+    SinglePinholeNet,
+    SingleComptonNet,
+    JointBNCTReconNet,
+)
+from run_bnct_experiments import compute_psnr, compute_ssim, compute_rmse
 
-import matplotlib.font_manager as fm
-
-# Auto-register Linux CJK fonts when deployed on Streamlit Community Cloud / Debian containers
-for _cjk_path in (
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-    "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
-):
-    if os.path.exists(_cjk_path):
-        try:
-            fm.fontManager.addfont(_cjk_path)
-        except Exception:
-            pass
-
-plt.rcParams["font.sans-serif"] = [
-    "Microsoft YaHei",
-    "SimHei",
-    "Noto Sans CJK JP",
-    "Noto Sans CJK SC",
-    "WenQuanYi Zen Hei",
-    "DejaVu Sans",
-]
+plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CKPT_DIR = os.path.join(BASE_DIR, "checkpoints")
+RES_DIR = os.path.join(BASE_DIR, "results")
+FIG_DIR = os.path.join(RES_DIR, "figures")
+
 st.set_page_config(
-    page_title="双模智能伽马成像仿真与重建平台",
-    page_icon="☢️",
+    page_title="BNCT 478 keV 智能伽马成像正反算实验台",
+    page_icon="⚛️",
     layout="wide",
 )
 
 
 @st.cache_resource
-def load_models_and_base_config():
-    with open("demo/configs/system_config.yaml", "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def load_bnct_models():
+    device = torch.device("cpu")
+    ev_net = BNCTEventNet().to(device)
+    pin_net = SinglePinholeNet().to(device)
+    comp_net = SingleComptonNet().to(device)
+    joint_net = JointBNCTReconNet().to(device)
 
-    ev_net = LiteEventNet(in_features=16, hidden_dim=96, num_classes=4).to(device)
-    ev_net.load_state_dict(torch.load("demo/checkpoints/lite_event_net.pt", map_location=device))
+    ev_p = os.path.join(CKPT_DIR, "bnct_event_net.pt")
+    if os.path.exists(ev_p):
+        ev_net.load_state_dict(torch.load(ev_p, map_location=device, weights_only=True))
+        pin_net.load_state_dict(torch.load(os.path.join(CKPT_DIR, "single_pinhole_net.pt"), map_location=device, weights_only=True))
+        comp_net.load_state_dict(torch.load(os.path.join(CKPT_DIR, "single_compton_net.pt"), map_location=device, weights_only=True))
+        joint_net.load_state_dict(torch.load(os.path.join(CKPT_DIR, "joint_bnct_net.pt"), map_location=device, weights_only=True))
+
     ev_net.eval()
+    pin_net.eval()
+    comp_net.eval()
+    joint_net.eval()
+    return ev_net, pin_net, comp_net, joint_net, device
 
-    rc_net = LiteDualGammaNet(in_ch_col=3, in_ch_comp=3, base_ch=32).to(device)
-    rc_net.load_state_dict(torch.load("demo/checkpoints/lite_dual_gammanet.pt", map_location=device))
-    rc_net.eval()
-    return cfg, ev_net, rc_net, device
+
+def infer_event_weights(ev_net, dig, geom, device):
+    feats = extract_18d_event_features(dig, geom)
+    if len(feats) == 0:
+        z = np.zeros((0,), dtype=np.float32)
+        return z, z, z, z
+    with torch.no_grad():
+        logits, dcos = ev_net(torch.from_numpy(feats).to(device))
+        probs = torch.softmax(logits, dim=-1).cpu().numpy()
+        return probs[:, 0], probs[:, 1], probs[:, 2], dcos.cpu().numpy()
 
 
-st.title("☢️ 基于像素化阵列探测器的准直孔与康普顿散射智能伽马成像系统")
-st.caption("四川大学大创课题原型演示系统 | 物理输运蒙特卡罗 + 真实探测器退化修正 (Digitizer) + 两级轻量化 AI 联合重建 vs 传统迭代算法")
-
-base_cfg, event_net, recon_net, device = load_models_and_base_config()
-
-# ==================== Sidebar Controls ====================
-st.sidebar.header("1. 放射源场景预设与工况配置")
-preset = st.sidebar.selectbox(
-    "选择典型测试工况",
-    [
-        "宽能段双核素同场 (Am-241 59.5keV + Cs-137 661.7keV)",
-        "低能单点源 Am-241 (59.5 keV - 准直主导)",
-        "中高能单点源 Cs-137 (661.7 keV - 康普顿主导)",
-        "近距双点源角分辨测试 (12° 间隔, Tc-99m 140 keV)",
-        "复杂扩展圆环源 (Ba-133 356 keV)",
-        "L形扩展面源 (Cs-137 661.7 keV)",
-        "自定义单/双放射源配置",
-    ],
+st.title("⚛️ BNCT 478 keV 特征伽马智能成像 · 正算与反算双软件包实验平台")
+st.caption(
+    "四川大学大学生创新训练计划（课题编号 `12475312` · 指导教师：韩纪锋研究员） | "
+    "聚焦硼中子俘获治疗（BNCT）478 keV 交叉能区与复杂多能本底下的单小孔、单康普顿及联合轻量化神经网络重建"
 )
 
-n_photons = st.sidebar.slider("入射探测器立体角模拟光子数", min_value=10000, max_value=130000, value=75000, step=5000)
+ev_net, pin_net, comp_net, joint_net, device = load_bnct_models()
+summary_path = os.path.join(RES_DIR, "bnct_metrics_summary.json")
+summary = json.load(open(summary_path, encoding="utf-8")) if os.path.exists(summary_path) else None
 
-st.sidebar.header("2. 真实探测器物理退化修正参数")
-fwhm_662 = st.sidebar.slider("662 keV 处能量分辨率 FWHM (%)", min_value=3.0, max_value=14.0, value=7.0, step=0.5) / 100.0
-doi_sigma = st.sidebar.slider("晶体作用深度 (DOI) 误差 σ_z (mm)", min_value=0.2, max_value=3.0, value=1.2, step=0.2)
-trig_thresh = st.sidebar.slider("单通道电子学触发阈值 (keV)", min_value=10.0, max_value=35.0, value=18.0, step=2.0)
-bg_frac = st.sidebar.slider("环境本底与偶然符合污染比例 (%)", min_value=0, max_value=25, value=8, step=2) / 100.0
-mlem_iters = st.sidebar.slider("传统联合 LM-MLEM 对比迭代轮数", min_value=10, max_value=60, value=30, step=5)
+with st.sidebar:
+    st.header("正算物理工况参数设置")
+    shape_map = {
+        "分叶肿瘤 + 正常组织低硼本底 (T/N)": "irregular_tumor_tn",
+        "近距双病灶热点源": "dual_hotspots",
+        "中心坏死环形肿瘤硼分布": "necrotic_ring",
+        "单病灶点状硼富集源": "single_hotspot",
+        "浸润条带/管状分布源": "tubular_line",
+    }
+    shape_label = st.selectbox("硼 (10B) 空间分布几何形态", list(shape_map.keys()), index=0)
+    n_photons = st.slider("478 keV 目标发射光子数", min_value=15000, max_value=80000, value=45000, step=5000)
+    bg_ratio = st.slider("BNCT 非单一能量杂散背景比 (511/2223 keV)", min_value=0.0, max_value=1.5, value=0.65, step=0.05)
+    fwhm_662 = st.slider("像素阵列基准能量分辨率 (% @ 662 keV)", min_value=4.0, max_value=13.0, value=7.0, step=0.5)
+    elec_noise = st.slider("电子学读出噪声 (keV)", min_value=1.5, max_value=10.0, value=4.5, step=0.5)
+    seed_val = st.number_input("蒙特卡罗随机种子", min_value=1, max_value=99999, value=2026)
+    show_controls = st.checkbox("同步运行平行板多孔与MURA编码板对照实验", value=True)
+    run_btn = st.button("🚀 运行正算模拟与多路线AI反算对比", type="primary", use_container_width=True)
 
-# Custom scene controls if chosen
-custom_comps = []
-if preset == "自定义单/双放射源配置":
-    st.sidebar.subheader("自定义源 1")
-    e_c1 = st.sidebar.selectbox("源1 核素能量 (keV)", [59.5, 140.5, 356.0, 661.7, 1332.5], index=0)
-    x_c1 = st.sidebar.slider("源1 水平角 θ_x (°)", -25.0, 25.0, -14.0, 1.0)
-    y_c1 = st.sidebar.slider("源1 俯仰角 θ_y (°)", -25.0, 25.0, 10.0, 1.0)
-    custom_comps.append(SourceComponent("point", float(e_c1), 1.0, {"cx": x_c1, "cy": y_c1}))
-    if st.sidebar.checkbox("启用源 2 (构成双源混合场)", value=True):
-        e_c2 = st.sidebar.selectbox("源2 核素能量 (keV)", [59.5, 140.5, 356.0, 661.7, 1332.5], index=3)
-        x_c2 = st.sidebar.slider("源2 水平角 θ_x (°)", -25.0, 25.0, 13.0, 1.0)
-        y_c2 = st.sidebar.slider("源2 俯仰角 θ_y (°)", -25.0, 25.0, -10.0, 1.0)
-        custom_comps.append(SourceComponent("point", float(e_c2), 1.0, {"cx": x_c2, "cy": y_c2}))
+tab1, tab2, tab3 = st.tabs([
+    "🔬 实时正算模拟与反算路线横向对比",
+    "📊 80组独立盲测集与抗干扰性能总览",
+    "📦 正算软件包 (forward_pkg) 与反算软件包 (inverse_pkg) 架构",
+])
 
-# Build dynamic config
-cfg_run = copy.deepcopy(base_cfg)
-cfg_run["digitizer"]["energy_res_ref_fwhm"] = fwhm_662
-cfg_run["digitizer"]["doi_sigma_mm"] = doi_sigma
-cfg_run["digitizer"]["trigger_threshold_keV"] = trig_thresh
-cfg_run["digitizer"]["random_bg_fraction"] = bg_frac
+with tab1:
+    if run_btn or "last_bnct_run" not in st.session_state:
+        rng = np.random.default_rng(int(seed_val))
+        geom = BNCTSystemGeometry()
+        dcfg = DetectorDigitizerConfig(fwhm_662_pct=float(fwhm_662), elec_noise_kev=float(elec_noise))
+        gt, meta = generate_bnct_boron_distribution(shape_map[shape_label], rng)
 
-geom = CameraGeometry.from_config(cfg_run)
-digitizer = DetectorDigitizer(geom, cfg_run["digitizer"])
-a_coll = build_collimated_system_matrix(geom, rep_energy_kev=120.0)
+        t0 = time.perf_counter()
+        ev_p = simulate_bnct_forward_transport(gt, geom, "single_pinhole", int(n_photons), float(bg_ratio), rng)
+        dig_p = digitize_detector_events(ev_p, geom, dcfg, rng)
 
-if preset.startswith("宽能段双核素同场"):
-    comps = [
-        SourceComponent("point", 59.5, 0.92, {"cx": -15.0, "cy": 12.0}),
-        SourceComponent("point", 661.7, 1.00, {"cx": 14.0, "cy": -11.0}),
-    ]
-elif preset.startswith("低能单点源"):
-    comps = [SourceComponent("point", 59.5, 1.0, {"cx": -12.0, "cy": 10.0})]
-elif preset.startswith("中高能单点源"):
-    comps = [SourceComponent("point", 661.7, 1.0, {"cx": 14.0, "cy": -11.0})]
-elif preset.startswith("近距双点源"):
-    comps = [
-        SourceComponent("point", 140.5, 1.0, {"cx": -6.0, "cy": 2.0}),
-        SourceComponent("point", 140.5, 1.0, {"cx": 6.0, "cy": 2.0}),
-    ]
-elif preset.startswith("复杂扩展圆环源"):
-    comps = [SourceComponent("ring", 356.0, 1.0, {"cx": 0.0, "cy": 0.0, "radius": 11.0})]
-elif preset.startswith("L形扩展面源"):
-    comps = [SourceComponent("l_shape", 661.7, 1.0, {"cx": -9.0, "cy": -9.0, "arm": 17.0})]
-else:
-    comps = custom_comps
+        ev_c = simulate_bnct_forward_transport(gt, geom, "single_compton", int(n_photons), float(bg_ratio), rng)
+        dig_c = digitize_detector_events(ev_c, geom, dcfg, rng)
 
-scene = SourceScene(preset, comps, *render_ground_truth_map(geom, comps))
+        ev_j = simulate_bnct_forward_transport(gt, geom, "joint_pinhole_compton", int(n_photons), float(bg_ratio), rng)
+        dig_j = digitize_detector_events(ev_j, geom, dcfg, rng)
+        fwd_ms = (time.perf_counter() - t0) * 1000.0
 
-# Run live MC simulation + Digitization + Reconstruction
-rng = np.random.default_rng(1024)
-t_mc0 = time.perf_counter()
-raw_ev = simulate_scene_transport(geom, scene, n_photons, rng, bg_fraction=bg_frac)
-dig_ev = digitizer.digitize(raw_ev, rng)
-t_mc_ms = (time.perf_counter() - t_mc0) * 1000.0
+        t1 = time.perf_counter()
+        wp, _, _, _ = infer_event_weights(ev_net, dig_p, geom, device)
+        xp = project_pinhole_channels(dig_p, geom, wp)[None]
+        with torch.no_grad():
+            rec_pin = pin_net(torch.from_numpy(xp)).numpy()[0, 0]
 
-res = reconstruct_all_methods(geom, a_coll, dig_ev, event_net, recon_net, device, mlem_iters=mlem_iters)
-san = res["sanitized"]
-mw = res["modal_weights"]
-speedup = res["t_mlem_ms"] / max(res["t_ai_ms"], 0.05)
+        _, wfc, wrc, dcc = infer_event_weights(ev_net, dig_c, geom, device)
+        xc = project_compton_channels(dig_c, geom, wfc, wrc, dcc)[None]
+        with torch.no_grad():
+            rec_comp = comp_net(torch.from_numpy(xc)).numpy()[0, 0]
 
-# Top KPI Metrics Row
-k1, k2, k3, k4, k5 = st.columns(5)
-k1.metric("触发数字化总事例数", f"{dig_ev.n_hits.size:,}", f"MC模拟 {t_mc_ms:.1f} ms")
-k2.metric("AI甄别有效准直 / 康普顿数", f"{san.pix_ix_col.size:,} / {san.r1_comp_mm.shape[0]:,}", f"剔除废事例 {int(np.sum(san.pred_classes == 0)):,}")
-k3.metric("本文双模 AI 重建 PSNR", f"{calc_psnr(res['ai'], scene.gt_map):.2f} dB", f"SSIM = {calc_ssim_2d(res['ai'], scene.gt_map):.3f}")
-k4.metric("双模 AI 单帧推理耗时", f"{res['t_ai_ms']:.2f} ms", f"较 LM-MLEM 提速 {speedup:.0f}×")
-k5.metric("跨模态自适应门控权重", f"准直 {mw[0]*100:.0f}% : 康普顿 {mw[1]*100:.0f}%", "物理可解释动态融合")
+        t_j0 = time.perf_counter()
+        wpj, wfj, wrj, dcj = infer_event_weights(ev_net, dig_j, geom, device)
+        xpj = project_pinhole_channels(dig_j, geom, wpj)[None]
+        xcj = project_compton_channels(dig_j, geom, wfj, wrj, dcj)[None]
+        with torch.no_grad():
+            rec_joint_t, mw_t = joint_net(torch.from_numpy(xpj), torch.from_numpy(xcj))
+            rec_joint = rec_joint_t.numpy()[0, 0]
+            mw = mw_t.numpy()[0]
+        joint_ms = (time.perf_counter() - t_j0) * 1000.0
 
-# Main 5-Panel Comparison Figure
-extent = [-geom.fov_half_deg, geom.fov_half_deg, -geom.fov_half_deg, geom.fov_half_deg]
-fig, axes = plt.subplots(1, 5, figsize=(17.0, 3.8))
-panels = [
-    ("真实放射源分布 (GT)", scene.gt_map, ""),
-    ("纯准直解码 (MURA)", res["mura"], f"PSNR: {calc_psnr(res['mura'], scene.gt_map):.1f} dB"),
-    ("纯康普顿反投影 (SBP)", res["sbp"], f"PSNR: {calc_psnr(res['sbp'], scene.gt_map):.1f} dB"),
-    (f"传统联合 LM-MLEM ({mlem_iters}轮)", res["jmlem"], f"PSNR: {calc_psnr(res['jmlem'], scene.gt_map):.1f} dB | {res['t_mlem_ms']:.1f} ms"),
-    ("本文轻量化双模 AI", res["ai"], f"PSNR: {calc_psnr(res['ai'], scene.gt_map):.1f} dB | {res['t_ai_ms']:.1f} ms"),
-]
-for j, (tit, im_d, sub) in enumerate(panels):
-    axes[j].imshow(im_d, cmap="inferno", origin="lower", extent=extent, vmin=0.0, vmax=1.0)
-    axes[j].set_title(tit, fontsize=10.5, fontweight="bold")
-    axes[j].set_xlabel("水平角 θ_x (°)")
-    if j == 0:
-        axes[j].set_ylabel("俯仰角 θ_y (°)")
-    if sub:
-        axes[j].text(0.04, 0.94, sub, transform=axes[j].transAxes, color="white", fontsize=8, va="top", bbox=dict(boxstyle="round,pad=0.2", fc="black", alpha=0.6))
-plt.tight_layout()
-st.pyplot(fig)
-plt.close(fig)
+        rec_mh, rec_mura = None, None
+        if show_controls:
+            dig_mh = digitize_detector_events(
+                simulate_bnct_forward_transport(gt, geom, "parallel_multihole", int(n_photons), float(bg_ratio), rng),
+                geom, dcfg, rng
+            )
+            rec_mh = reconstruct_parallel_multihole(dig_mh, geom)
+            dig_mu = digitize_detector_events(
+                simulate_bnct_forward_transport(gt, geom, "coded_aperture_mura", int(n_photons), float(bg_ratio), rng),
+                geom, dcfg, rng
+            )
+            rec_mura = reconstruct_coded_aperture_mura(dig_mu, geom)
 
-# Bottom Diagnostics Row: Energy Spectrum + Event Breakdown
-col_left, col_right = st.columns(2)
-with col_left:
-    st.subheader("探测器理想沉积能谱 vs Digitizer 退化修正后实测能谱")
-    fig_e, ax_e = plt.subplots(figsize=(7.2, 3.3))
-    e_raw = raw_ev.e1_kev + raw_ev.e2_kev
-    e_dig = dig_ev.e1_dig_kev + dig_ev.e2_dig_kev
-    bins = np.linspace(10, max(float(np.percentile(e_dig, 99.5)), 200.0), 110)
-    ax_e.hist(e_raw, bins=bins, alpha=0.45, color="#4C78A8", label="MC 理想沉积能量")
-    ax_e.hist(e_dig, bins=bins, histtype="step", lw=1.6, color="#E45756", label="Digitizer 展宽+噪声+阈值后能量")
-    ax_e.set_yscale("log")
-    ax_e.set_xlabel("沉积总能量 (keV)")
-    ax_e.set_ylabel("事件计数 (log)")
-    ax_e.legend()
-    ax_e.grid(alpha=0.25)
+        st.session_state["last_bnct_run"] = {
+            "gt": gt, "dig_j": dig_j, "rec_pin": rec_pin, "rec_comp": rec_comp,
+            "rec_joint": rec_joint, "rec_mh": rec_mh, "rec_mura": rec_mura,
+            "mw": mw, "fwd_ms": fwd_ms, "joint_ms": joint_ms,
+        }
+
+    res = st.session_state["last_bnct_run"]
+    gt = res["gt"]
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("联合轻量化重建 PSNR", f"{compute_psnr(res['rec_joint'], gt):.2f} dB",
+              f"+{compute_psnr(res['rec_joint'], gt) - compute_psnr(res['rec_pin'], gt):.2f} dB vs 单小孔")
+    c2.metric("联合重建结构相似性 SSIM", f"{compute_ssim(res['rec_joint'], gt):.4f}",
+              f"+{compute_ssim(res['rec_joint'], gt) - compute_ssim(res['rec_comp'], gt):.4f} vs 单康普顿")
+    c3.metric("联合网络单帧反算耗时", f"{res['joint_ms']:.1f} ms", "非迭代神经网络一步出图")
+    c4.metric("跨模态门控权重 (准直 : 康普顿)", f"{res['mw'][0]:.2f} : {res['mw'][1]:.2f}", "自适应双通道协同")
+
+    ncols = 6 if res["rec_mh"] is not None else 4
+    fig, axes = plt.subplots(1, ncols, figsize=(3.1 * ncols, 3.3))
+    ext = [-100, 100, -100, 100]
+    items = [(gt, "真实硼空间分布 (GT)")]
+    if res["rec_mh"] is not None:
+        items.append((res["rec_mh"], f"平行板多孔 (对照)\nPSNR={compute_psnr(res['rec_mh'], gt):.1f} dB"))
+        items.append((res["rec_mura"], f"MURA编码板 (对照)\nPSNR={compute_psnr(res['rec_mura'], gt):.1f} dB"))
+    items.extend([
+        (res["rec_pin"], f"单小孔AI反算\nPSNR={compute_psnr(res['rec_pin'], gt):.2f} dB"),
+        (res["rec_comp"], f"单康普顿AI反算\nPSNR={compute_psnr(res['rec_comp'], gt):.2f} dB"),
+        (res["rec_joint"], f"联合轻量化AI反算\nPSNR={compute_psnr(res['rec_joint'], gt):.2f} dB"),
+    ])
+    for ax, (im, ttl) in zip(axes, items):
+        ax.imshow(im, origin="lower", extent=ext, cmap="inferno", vmin=0.0, vmax=1.0)
+        ax.set_title(ttl, fontsize=9.2, fontweight="bold")
+        ax.set_xlabel("X (mm)", fontsize=8)
+    axes[0].set_ylabel("Y (mm)", fontsize=8)
     plt.tight_layout()
-    st.pyplot(fig_e)
-    plt.close(fig_e)
+    st.pyplot(fig)
+    plt.close(fig)
 
-with col_right:
-    st.subheader("第一级 LiteEventNet 光子作用事例四分类解析统计")
-    fig_c, ax_c = plt.subplots(figsize=(7.2, 3.3))
-    c_labels = ["逃逸/穿透/本底\n(已自动剔除)", "有效准直光电\n(送入准直分支)", "正序康普顿 A→B\n(送入康普顿分支)", "逆序康普顿 B→A\n(AI自动翻转修复)"]
-    cnts = [int(np.sum(san.pred_classes == k)) for k in range(4)]
-    bars = ax_c.bar(c_labels, cnts, color=["#7F7F7F", "#4C78A8", "#54A24B", "#F58518"], width=0.52)
-    for b, v in zip(bars, cnts):
-        ax_c.text(b.get_x() + b.get_width() / 2, v + max(cnts) * 0.02, f"{v:,}", ha="center", fontsize=9)
-    ax_c.set_ylabel("事件数")
-    ax_c.set_ylim(0, max(cnts) * 1.18 + 10)
-    ax_c.grid(axis="y", alpha=0.25)
-    plt.tight_layout()
-    st.pyplot(fig_c)
-    plt.close(fig_c)
+with tab2:
+    if summary is not None:
+        st.subheader("80 组独立复杂工况盲测集横向评估结果")
+        bm = summary["benchmark_80_scenes"]
+        rows = [
+            {"评估路线": "MURA 编码板准直解码（可行性对照）", **bm["coded_aperture_mura"]},
+            {"评估路线": "平行板多孔准直投影（可行性对照）", **bm["parallel_multihole"]},
+            {"评估路线": "单康普顿轻量化 AI 反算 (SingleComptonNet)", **bm["single_compton_ai"]},
+            {"评估路线": "单小孔轻量化 AI 反算 (SinglePinholeNet)", **bm["single_pinhole_ai"]},
+            {"评估路线": "联合重建（去除前端事例甄别消融）", **bm["joint_ai_no_eventnet"]},
+            {"评估路线": "准直+康普顿联合轻量化 AI 反算（完整方案）", **bm["joint_pinhole_compton_ai"]},
+        ]
+        st.dataframe(
+            [{
+                "成像方案路线": r["评估路线"],
+                "平均 PSNR (dB)": r["psnr_db"],
+                "平均 SSIM": r["ssim"],
+                "平均 RMSE": r["rmse"],
+                "单帧耗时 (ms)": r["net_latency_ms"],
+            } for r in rows],
+            use_container_width=True,
+        )
+
+    for fn, cap in [
+        ("fig2_collimator_limitations_proof.png", "平行板多孔与编码板在 BNCT 478 keV 复杂场下的局限性机理验证"),
+        ("fig5_five_shapes_multi_route_comparison.png", "不同硼/放射源形状下单小孔、单康普顿与联合反算对比"),
+        ("fig6_robustness_and_ablation.png", "多能本底干扰与能量分辨率退化鲁棒性曲线"),
+    ]:
+        fp = os.path.join(FIG_DIR, fn)
+        if os.path.exists(fp):
+            st.image(fp, caption=cap, use_container_width=True)
+
+with tab3:
+    st.markdown("""
+### 双软件包工程目录结构
+1. **`forward_pkg/`（正算软件包）**
+   - `bnct_physics_and_collimators.py`：封装 `GAGG:Ce` 与钨合金截面插值、5 类硼浓度分布生成、BNCT `478 keV` 特征伽马与 `511 keV / 2223 keV` 复杂本底抽样，以及单小孔、单康普顿、联合几何、平行板多孔、MURA 编码板五种输运模型。
+   - `detector_digitizer.py`：模拟电子学噪声、平方根能量分辨率展宽、相邻像素串扰、`2.0 mm` 像素离散化与轴向 DOI 位置模糊，并提供无迭代快速几何投影接口。
+2. **`inverse_pkg/`（反算软件包）**
+   - `bnct_event_net.py`：轻量残差网络 `BNCTEventNet`（`4.8万`参数），基于 18 维运动学判据剔除非 478 keV 杂散干扰与孔壁散射，恢复康普顿正逆散射序列并微调散射角余弦。
+   - `recon_networks.py`：提供单小孔反算网 `SinglePinholeNet`、单康普顿反算网 `SingleComptonNet` 及跨模态门控联合重建网 `JointBNCTReconNet`（全链路总参数量 `< 0.30 M`，零传统统计迭代）。
+""")
